@@ -1,3 +1,34 @@
+type Coach = record { id : nat64; name : text; team : text };
+type CoachPayload = record { name : text; team : text };
+type Error = variant {
+  EmptyFields : record { msg : text };
+  NotFound : record { msg : text };
+};
+type Result = variant { Ok : Coach; Err : Error };
+type Result_1 = variant { Ok : Stadium; Err : Error };
+type Result_2 = variant { Ok : Team; Err : Error };
+type Result_3 = variant { Ok; Err : Error };
+type Stadium = record {
+  id : nat64;
+  name : text;
+  capacity : nat32;
+  location : text;
+};
+type StadiumPayload = record { name : text; capacity : nat32; location : text };
+type Team = record { id : nat64; manager : text; stadium : text; name : text };
+type TeamPayload = record { manager : text; stadium : text; name : text };
 service : {
-    "greet": (text) -> (text) query;
+  add_coach : (CoachPayload) -> (Result);
+  add_stadium : (StadiumPayload) -> (Result_1);
+  add_team : (TeamPayload) -> (Result_2);
+  delete_coach : (nat64) -> (Result_3);
+  delete_stadium : (nat64) -> (Result_3);
+  delete_team : (nat64) -> (Result_3);
+  get_coach : (nat64) -> (Result) query;
+  get_stadium : (nat64) -> (Result_1) query;
+  get_team : (nat64) -> (Result_2) query;
+  update_coach : (nat64, CoachPayload) -> (Result);
+  update_stadium : (nat64, StadiumPayload) -> (Result_1);
+  update_team : (nat64, TeamPayload) -> (Result_2);
 }
+
