@@ -1,17 +1,30 @@
-// Importing neccessary dependencies
 #[macro_use]
 extern crate serde;
 use candid::{Decode, Encode};
 use ic_cdk::api::time;
 use ic_stable_structures::memory_manager::{MemoryId, MemoryManager, VirtualMemory};
 use ic_stable_structures::{BoundedStorable, Cell, DefaultMemoryImpl, StableBTreeMap, Storable};
-use std::{borrow::Cow, cell::RefCell};
+use std::{borrow::Cow, cell::RefCell, error::Error};
 
-//Use these types to store our canister's state and generate unique IDs
 type Memory = VirtualMemory<DefaultMemoryImpl>;
 type IdCell = Cell<u64, Memory>;
 
-//Define our Team Struct
+// Custom error type
+#[derive(Debug)]
+enum CustomError {
+    NotFound(String),
+    EmptyFields(String),
+}
+
+impl Error for CustomError {
+    fn description(&self) -> &str {
+        match self {
+            CustomError::NotFound(msg) => msg,
+            CustomError::EmptyFields(msg) => msg,
+        }
+    }
+}
+
 #[derive(candid::CandidType, Clone, Serialize, Deserialize, Default)]
 struct Team {
     id: u64,
@@ -35,7 +48,6 @@ impl BoundedStorable for Team {
     const IS_FIXED_SIZE: bool = false;
 }
 
-//Define our Coach Struct
 #[derive(candid::CandidType, Clone, Serialize, Deserialize, Default)]
 struct Coach {
     id: u64,
@@ -58,7 +70,6 @@ impl BoundedStorable for Coach {
     const IS_FIXED_SIZE: bool = false;
 }
 
-/// Define our Stadium struct.
 #[derive(candid::CandidType, Clone, Serialize, Deserialize, Default)]
 struct Stadium {
     id: u64,
@@ -82,7 +93,6 @@ impl BoundedStorable for Stadium {
     const IS_FIXED_SIZE: bool = false;
 }
 
-//Define our Match struct
 #[derive(candid::CandidType, Clone, Serialize, Deserialize, Default)]
 struct Match {
     id: u64,
@@ -107,7 +117,6 @@ impl BoundedStorable for Match {
     const IS_FIXED_SIZE: bool = false;
 }
 
-//Represents payload for adding a team
 #[derive(candid::CandidType, Serialize, Deserialize)]
 struct TeamPayload {
     name: String,
@@ -125,7 +134,6 @@ impl Default for TeamPayload {
     }
 }
 
-//Represents payload for adding a coach
 #[derive(candid::CandidType, Serialize, Deserialize)]
 struct CoachPayload {
     name: String,
@@ -141,7 +149,6 @@ impl Default for CoachPayload {
     }
 }
 
-/// Represents payload for adding a stadium.
 #[derive(candid::CandidType, Serialize, Deserialize)]
 struct StadiumPayload {
     name: String,
@@ -159,7 +166,6 @@ impl Default for StadiumPayload {
     }
 }
 
-//Represents payload for scheduling a match
 #[derive(candid::CandidType, Serialize, Deserialize)]
 struct MatchPayload {
     home_team: String,
@@ -179,7 +185,6 @@ impl Default for MatchPayload {
     }
 }
 
-//thread-local variables that will hold our canister's state
 thread_local! {
     static MEMORY_MANAGER: RefCell<MemoryManager<DefaultMemoryImpl>> = RefCell::new(
         MemoryManager::init(DefaultMemoryImpl::default())
@@ -197,48 +202,41 @@ thread_local! {
 
     static COACH_STORAGE: RefCell<StableBTreeMap<u64, Coach, Memory>> =
         RefCell::new(StableBTreeMap::init(
-            MEMORY_MANAGER.with(|m| m.borrow().get(MemoryId::new(1)))
+            MEMORY_MANAGER.with(|m| m.borrow().get(MemoryId::new(2)))
     ));
 
     static STADIUM_STORAGE: RefCell<StableBTreeMap<u64, Stadium, Memory>> =
         RefCell::new(StableBTreeMap::init(
-            MEMORY_MANAGER.with(|m| m.borrow().get(MemoryId::new(1)))
+            MEMORY_MANAGER.with(|m| m.borrow().get(MemoryId::new(3)))
     ));
 
     static MATCH_STORAGE: RefCell<StableBTreeMap<u64, Match, Memory>> =
         RefCell::new(StableBTreeMap::init(
-            MEMORY_MANAGER.with(|m| m.borrow().get(MemoryId::new(1)))
+            MEMORY_MANAGER.with(|m| m.borrow().get(MemoryId::new(4)))
     ));
 }
 
-// Represents errors that might occcur
-#[derive(candid::CandidType, Deserialize, Serialize)]
-enum Error {
-    NotFound { msg: String },
-    EmptyFields { msg: String },
-}
-
-//Adds a new team with the provided payload
 #[ic_cdk::update]
-fn add_team(payload: TeamPayload) -> Result<Team, Error> {
-    //Validation Logic
+fn add_team(payload: TeamPayload) -> Result<Team, CustomError> {
+    // Validation logic
     if payload.name.is_empty()
         || payload.manager.is_empty()
         || payload.stadium.is_empty()
     {
-        return Err(Error::EmptyFields {
+        return Err(CustomError::EmptyFields {
             msg: "Please fill in all the required fields to add a team".to_string(),
         });
     }
 
     let id = ID_COUNTER.with(|counter| {
         let current_value = *counter.borrow().get();
-        let _ = counter.borrow_mut().set(current_value + 1);
+        counter.borrow_mut().set(current_value + 1);
         current_value + 1
     });
 
     let team = Team {
         id,
+        name: payload.
         name: payload.name,
         manager: payload.manager,
         stadium: payload.stadium,
@@ -248,80 +246,75 @@ fn add_team(payload: TeamPayload) -> Result<Team, Error> {
     Ok(team)
 }
 
-//Retrieves information about a team based on the ID
 #[ic_cdk::query]
-fn get_team(id: u64) -> Result<Team, Error> {
-    TEAM_STORAGE.with(|storage| match storage.borrow().get(&id) {
-        Some(team) => Ok(team.clone()),
-        None => Err(Error::NotFound {
-            msg: format!("Team with ID {} can not be found", id),
-        }),
-    })
-}
-
-// Deletes a team based on the ID.
-#[ic_cdk::update]
-fn delete_team(id: u64) -> Result<(), Error> {
+fn get_team(id: u64) -> Result<Team, CustomError> {
     TEAM_STORAGE.with(|storage| {
-        if storage.borrow_mut().remove(&id).is_some() {
-            Ok(())
+        if let Some(team) = storage.borrow().get(&id) {
+            Ok(team.clone())
         } else {
-            Err(Error::NotFound {
-                msg: format!("Team with ID {} not found", id),
-            })
+            Err(CustomError::NotFound(format!(
+                "Team with ID {} cannot be found",
+                id
+            )))
         }
     })
 }
 
-//Updates the information of the team with the ID and payload
 #[ic_cdk::update]
-fn update_team(id: u64, payload: TeamPayload) -> Result<Team, Error> {
-    //Validation Logic
+fn delete_team(id: u64) -> Result<(), CustomError> {
+    TEAM_STORAGE.with(|storage| {
+        if storage.borrow_mut().remove(&id).is_some() {
+            Ok(())
+        } else {
+            Err(CustomError::NotFound(format!(
+                "Team with ID {} not found",
+                id
+            )))
+        }
+    })
+}
+
+#[ic_cdk::update]
+fn update_team(id: u64, payload: TeamPayload) -> Result<Team, CustomError> {
+    // Validation logic
     if payload.name.is_empty()
         || payload.manager.is_empty()
         || payload.stadium.is_empty()
     {
-        return Err(Error::EmptyFields {
+        return Err(CustomError::EmptyFields {
             msg: "You must fill all of the required fields".to_string(),
         });
     }
 
     TEAM_STORAGE.with(|storage| {
-        let mut storage = storage.borrow_mut();
-        if let Some(existing_team) = storage.get(&id) {
-            // Clone the existing team to make a mutable copy
-            let mut updated_team = existing_team.clone();
-
+        if let Some(mut existing_team) = storage.borrow_mut().get_mut(&id) {
             // Update the fields
-            updated_team.name = payload.name;
-            updated_team.manager = payload.manager;
-            updated_team.stadium = payload.stadium;
+            existing_team.name = payload.name;
+            existing_team.manager = payload.manager;
+            existing_team.stadium = payload.stadium;
 
-            // Re-insert the updated team back into the storage
-            storage.insert(id, updated_team.clone());
-
-            Ok(updated_team)
+            Ok(existing_team.clone())
         } else {
-            Err(Error::NotFound {
-                msg: format!("Team with ID {} not found", id),
-            })
+            Err(CustomError::NotFound(format!(
+                "Team with ID {} not found",
+                id
+            )))
         }
     })
 }
 
-//Adds a new coach with the provide payload
 #[ic_cdk::update]
-fn add_coach(payload: CoachPayload) -> Result<Coach, Error> {
-    //Validation Logic
+fn add_coach(payload: CoachPayload) -> Result<Coach, CustomError> {
+    // Validation logic
     if payload.name.is_empty() || payload.team.is_empty() {
-        return Err(Error::EmptyFields {
+        return Err(CustomError::EmptyFields {
             msg: "You must fill in all the required fields".to_string(),
         });
     }
 
     let id = ID_COUNTER.with(|counter| {
         let current_value = *counter.borrow().get();
-        let _ = counter.borrow_mut().set(current_value + 1);
+        counter.borrow_mut().set(current_value + 1);
         current_value + 1
     });
 
@@ -335,76 +328,71 @@ fn add_coach(payload: CoachPayload) -> Result<Coach, Error> {
     Ok(coach)
 }
 
-//Retrieves information about a coach based on the ID provided
 #[ic_cdk::query]
-fn get_coach(id: u64) -> Result<Coach, Error> {
-    COACH_STORAGE.with(|storage| match storage.borrow().get(&id) {
-        Some(coach) => Ok(coach.clone()),
-        None => Err(Error::NotFound {
-            msg: format!("Coach with ID {} can not be found", id),
-        }),
-    })
-}
-
-// Deletes a coach based on the ID.
-#[ic_cdk::update]
-fn delete_coach(id: u64) -> Result<(), Error> {
+fn get_coach(id: u64) -> Result<Coach, CustomError> {
     COACH_STORAGE.with(|storage| {
-        if storage.borrow_mut().remove(&id).is_some() {
-            Ok(())
+        if let Some(coach) = storage.borrow().get(&id) {
+            Ok(coach.clone())
         } else {
-            Err(Error::NotFound {
-                msg: format!("Coach with ID {} not found", id),
-            })
+            Err(CustomError::NotFound(format!(
+                "Coach with ID {} cannot be found",
+                id
+            )))
         }
     })
 }
 
-//Updates the information of the coach with the ID and payload
 #[ic_cdk::update]
-fn update_coach(id: u64, payload: CoachPayload) -> Result<Coach, Error> {
-    //Validation Logic
+fn delete_coach(id: u64) -> Result<(), CustomError> {
+    COACH_STORAGE.with(|storage| {
+        if storage.borrow_mut().remove(&id).is_some() {
+            Ok(())
+        } else {
+            Err(CustomError::NotFound(format!(
+                "Coach with ID {} not found",
+                id
+            )))
+        }
+    })
+}
+
+#[ic_cdk::update]
+fn update_coach(id: u64, payload: CoachPayload) -> Result<Coach, CustomError> {
+    // Validation logic
     if payload.name.is_empty() || payload.team.is_empty() {
-        return Err(Error::EmptyFields {
+        return Err(CustomError::EmptyFields {
             msg: "You must fill in all the required fields".to_string(),
         });
     }
 
     COACH_STORAGE.with(|storage| {
-        let mut storage = storage.borrow_mut();
-        if let Some(existing_coach) = storage.get(&id) {
-            // Clone the existing coach to make a mutable copy
-            let mut updated_coach = existing_coach.clone();
-
+        if let Some(mut existing_coach) = storage.borrow_mut().get_mut(&id) {
             // Update the fields
-            updated_coach.name = payload.name;
-            updated_coach.team = payload.team;
+            existing_coach.name = payload.name;
+            existing_coach.team = payload.team;
 
-            // Re-insert the updated coach back into the storage
-            storage.insert(id, updated_coach.clone());
-
-            Ok(updated_coach)
+            Ok(existing_coach.clone())
         } else {
-            Err(Error::NotFound {
-                msg: format!("Coach with ID {} not found", id),
-            })
+            Err(CustomError::NotFound(format!(
+                "Coach with ID {} not found",
+                id
+            )))
         }
     })
 }
 
-// Adds a new Stadium
 #[ic_cdk::update]
-fn add_stadium(payload: StadiumPayload) -> Result<Stadium, Error> {
+fn add_stadium(payload: StadiumPayload) -> Result<Stadium, CustomError> {
     // Validation logic
     if payload.name.is_empty() || payload.location.is_empty() || payload.capacity == 0 {
-        return Err(Error::EmptyFields {
+        return Err(CustomError::EmptyFields {
             msg: "Please fill in all the required fields".to_string(),
         });
     }
 
     let id = ID_COUNTER.with(|counter| {
         let current_value = *counter.borrow().get();
-        let _ = counter.borrow_mut().set(current_value + 1);
+        counter.borrow_mut().set(current_value + 1);
         current_value + 1
     });
 
@@ -422,60 +410,57 @@ fn add_stadium(payload: StadiumPayload) -> Result<Stadium, Error> {
     Ok(stadium)
 }
 
-// Retrieves information about a Stadium based on the ID.
 #[ic_cdk::query]
-fn get_stadium(id: u64) -> Result<Stadium, Error> {
-    STADIUM_STORAGE.with(|storage| match storage.borrow().get(&id) {
-        Some(stadium) => Ok(stadium.clone()),
-        None => Err(Error::NotFound {
-            msg: format!("Stadium with ID {} not found", id),
-        }),
+fn get_stadium(id: u64) -> Result<Stadium, CustomError> {
+    STADIUM_STORAGE.with(|storage| {
+        if let Some(stadium) = storage.borrow().get(&id) {
+            Ok(stadium.clone())
+        } else {
+            Err(CustomError::NotFound(format!(
+                "Stadium with ID {} not found",
+                id
+            )))
+        }
     })
 }
 
-/// Updates information about a Stadium based on the ID and payload.
 #[ic_cdk::update]
-fn update_stadium(id: u64, payload: StadiumPayload) -> Result<Stadium, Error> {
+fn update_stadium(id: u64, payload: StadiumPayload) -> Result<Stadium, CustomError> {
     // Validation logic
     if payload.name.is_empty() || payload.location.is_empty() || payload.capacity == 0 {
-        return Err(Error::EmptyFields {
+        return Err(CustomError::EmptyFields {
             msg: "Please fill in all the required fields".to_string(),
         });
     }
 
     STADIUM_STORAGE.with(|storage| {
-        let mut storage = storage.borrow_mut();
-        if let Some(existing_stadium) = storage.get(&id) {
-            let mut updated_stadium = existing_stadium.clone();
+        if let Some(mut existing_stadium) = storage.borrow_mut().get_mut(&id) {
+            existing_stadium.name = payload.name;
+            existing_stadium.location = payload.location;
+            existing_stadium.capacity = payload.capacity;
 
-            updated_stadium.name = payload.name;
-            updated_stadium.location = payload.location;
-            updated_stadium.capacity = payload.capacity;
-
-            storage.insert(id, updated_stadium.clone());
-
-            Ok(updated_stadium)
+            Ok(existing_stadium.clone())
         } else {
-            Err(Error::NotFound {
-                msg: format!("Stadium with ID {} not found", id),
-            })
+            Err(CustomError::NotFound(format!(
+                "Stadium with ID {} not found",
+                id
+            )))
         }
     })
 }
 
-/// Deletes a Stadium based on the ID.
 #[ic_cdk::update]
-fn delete_stadium(id: u64) -> Result<(), Error> {
+fn delete_stadium(id: u64) -> Result<(), CustomError> {
     STADIUM_STORAGE.with(|storage| {
         if storage.borrow_mut().remove(&id).is_some() {
             Ok(())
         } else {
-            Err(Error::NotFound {
-                msg: format!("Stadium with ID {} not found", id),
-            })
+            Err(CustomError::NotFound(format!(
+                "Stadium with ID {} not found",
+                id
+            )))
         }
     })
 }
 
-// need this to generate candid
 ic_cdk::export_candid!();
